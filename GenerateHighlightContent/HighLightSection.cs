@@ -22,6 +22,15 @@ namespace GenerateHighlightContent
         [ConfigurationProperty("ThemeFolder", DefaultValue = "themes")]
         public string ThemeFolder { get { return base["ThemeFolder"].ToString(); } }
 
+        [ConfigurationProperty("LineNrReplaceCh", DefaultValue = "", IsRequired =false)]
+        public string LineNrReplaceCh { get { return base["LineNrReplaceCh"].ToString(); } }
+
+        [ConfigurationProperty("AsianBeforeSpace", DefaultValue = "", IsRequired = false)]
+        public string AsianBeforeSpace { get { return base["AsianBeforeSpace"].ToString(); } }
+
+        [ConfigurationProperty("AsianAfterSpace", DefaultValue = "", IsRequired = false)]
+        public string AsianAfterSpace { get { return base["AsianAfterSpace"].ToString(); } }
+
         [ConfigurationProperty("GeneralArguments", IsRequired = true, IsDefaultCollection = true)]
         public GeneralArgumentsCollection GeneralArguments
         {

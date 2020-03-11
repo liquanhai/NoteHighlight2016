@@ -26,6 +26,7 @@ using System.Threading;
 using System.Web;
 using GenerateHighlightContent;
 using System.Configuration;
+using System.Globalization;
 
 #pragma warning disable CS3003 // Type is not CLS-compliant
 
@@ -39,13 +40,15 @@ namespace NoteHighlightAddin
 		protected Application OneNoteApplication
 		{ get; set; }
 
-        private XNamespace ns;
+        public XNamespace ns;
 
         private MainForm mainForm;
 
         string tag;
 
-		public AddIn()
+        private bool QuickStyle { get; set; }
+
+        public AddIn()
 		{
 		}
 
@@ -135,7 +138,20 @@ namespace NoteHighlightAddin
 		{
 		}
 
-		//public async Task AddInButtonClicked(IRibbonControl control)
+        public bool cbQuickStyle_GetPressed(IRibbonControl control)
+        {
+            this.QuickStyle = NoteHighlightForm.Properties.Settings.Default.QuickStyle;
+            return this.QuickStyle;
+        }
+
+        public void cbQuickStyle_OnAction(IRibbonControl control, bool isPressed)
+        {
+            this.QuickStyle = isPressed;
+            NoteHighlightForm.Properties.Settings.Default.QuickStyle = this.QuickStyle;
+            NoteHighlightForm.Properties.Settings.Default.Save();
+        }
+
+        //public async Task AddInButtonClicked(IRibbonControl control)
         public void AddInButtonClicked(IRibbonControl control)
         {
             try
@@ -173,22 +189,22 @@ namespace NoteHighlightAddin
 
                 //TestForm t = new TestForm();
                 var pageNode = GetPageNode();
+                string pageXml = GetPageXml(pageNode.Attribute("ID").Value);
                 string selectedText = "";
                 XElement outline = null;
                 bool selectedTextFormated = false;
 
                 if (pageNode != null)
                 {
-                    var existingPageId = pageNode.Attribute("ID").Value;
-                    selectedText = GetSelectedText(existingPageId, out selectedTextFormated);
+                    selectedText = GetSelectedText(pageXml, out selectedTextFormated);
 
                     if (selectedText.Trim() != "")
                     {
-                        outline = GetOutline(existingPageId);
+                        outline = GetOutline(pageXml);
                     }
                 }
 
-                MainForm form = new MainForm(tag, outFileName, selectedText);
+                MainForm form = new MainForm(tag, outFileName, selectedText, this.QuickStyle);
 
                 System.Windows.Forms.Application.Run(form);
                 //}
@@ -202,7 +218,7 @@ namespace NoteHighlightAddin
 
                 if (File.Exists(fileName))
                 {
-                    InsertHighLightCodeToCurrentSide(fileName, form.Parameters, outline, selectedTextFormated);
+                    InsertHighLightCodeToCurrentSide(fileName, pageXml, form.Parameters, outline, selectedTextFormated);
                 }
             }
             catch (Exception e)
@@ -211,7 +227,36 @@ namespace NoteHighlightAddin
             }
         }
 
+        public void SettingsButtonClicked(IRibbonControl control)
+        {
+            try
+            {
+               
+                Thread t = new Thread(new ThreadStart(ShowSettingsForm));
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show("Exception from SettingsButtonClicked: " + e.ToString());
+            }
+        }
 
+        private void ShowSettingsForm()
+        {
+            try
+            {
+             
+                SettingsForm form = new SettingsForm();
+
+                System.Windows.Forms.Application.Run(form);
+                
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show("Exception from ShowForm: " + e.ToString());
+            }
+        }
 
         /// <summary>
         /// Specified in Ribbon.xml, this method returns the image to display on the ribbon button
@@ -243,7 +288,7 @@ namespace NoteHighlightAddin
         /// 插入 HighLight Code 至滑鼠游標的位置
         /// Insert HighLight Code To Mouse Position  
         /// </summary>
-        private void InsertHighLightCodeToCurrentSide(string fileName, HighLightParameter parameters, XElement outline, bool selectedTextFormated)
+        private void InsertHighLightCodeToCurrentSide(string fileName, string pageXml, HighLightParameter parameters, XElement outline, bool selectedTextFormated)
         {
             try
             {
@@ -261,11 +306,17 @@ namespace NoteHighlightAddin
                     string[] position = null;
                     if (outline == null)
                     {
-                        position = GetMousePointPosition(existingPageId);
+                        position = GetMousePointPosition(pageXml);
                     }
 
-                    var page = InsertHighLightCode(htmlContent, position, parameters, outline, selectedTextFormated);
+                    var page = InsertHighLightCode(htmlContent, position, parameters, outline, (new GenerateHighLight()).Config, selectedTextFormated, IsSelectedTextInline(pageXml));
                     page.Root.SetAttributeValue("ID", existingPageId);
+
+                    //Bug fix - remove overflow value for Indents
+                    foreach (var el in page.Descendants(ns + "Indent").Where(n => double.Parse(n.Attribute("indent").Value, new CultureInfo(page.Root.Attribute("lang").Value)) > 1000000))
+                    {
+                        el.Attribute("indent").Value = "0";
+                    }
 
                     OneNoteApplication.UpdatePageContent(page.ToString(), DateTime.MinValue);
                 }
@@ -302,11 +353,8 @@ namespace NoteHighlightAddin
         /// 取得滑鼠所在的點
         /// Get Mouse Point
         /// </summary>
-        private string[] GetMousePointPosition(string pageID)
+        private string[] GetMousePointPosition(string pageXml)
         {
-            string pageXml;
-            OneNoteApplication.GetPageContent(pageID, out pageXml, PageInfo.piSelection);
-
             var node = XDocument.Parse(pageXml).Descendants(ns + "Outline")
                                                .Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "partial")
                                                .FirstOrDefault();
@@ -323,11 +371,8 @@ namespace NoteHighlightAddin
             return null;
         }
 
-        private XElement GetOutline(string pageID)
+        private XElement GetOutline(string pageXml)
         {
-            string pageXml;
-            OneNoteApplication.GetPageContent(pageID, out pageXml, PageInfo.piSelection);
-
             var node = XDocument.Parse(pageXml).Descendants(ns + "Outline")
                                                .Where(n => n.Attribute("selected") != null && (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial"))
                                                .FirstOrDefault();
@@ -346,11 +391,16 @@ namespace NoteHighlightAddin
             return node;
         }
 
-        private string GetSelectedText(string pageID, out bool selectedTextFormated)
+        private string GetPageXml(string pageID)
         {
             string pageXml;
             OneNoteApplication.GetPageContent(pageID, out pageXml, PageInfo.piSelection);
 
+            return pageXml;
+        }
+
+        public string GetSelectedText(string pageXml, out bool selectedTextFormated)
+        {
             var node = XDocument.Parse(pageXml).Descendants(ns + "Outline")
                                                .Where(n => n.Attribute("selected") != null && (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial"))
                                                .FirstOrDefault();
@@ -371,39 +421,158 @@ namespace NoteHighlightAddin
                     attrPos = table.Descendants(ns + "Cell").LastOrDefault().Descendants(ns + "T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all");
                     selectedTextFormated = true;
                 }
-
+                int tabCount = 0;
+                int initTabCount = -1;
                 foreach (var line in attrPos)
                 {
                     var htmlDocument = new HtmlAgilityPack.HtmlDocument();
                     htmlDocument.LoadHtml(line.Value);
-                    
-                    sb.AppendLine(HttpUtility.HtmlDecode(htmlDocument.DocumentNode.InnerText));
+
+                    if (initTabCount == -1)
+                    {
+                        initTabCount = line.Ancestors().Elements(ns + "T").Count();
+                    }
+                    tabCount = line.Ancestors().Elements(ns + "T").Count() - initTabCount;
+
+
+                    sb.AppendLine(new String('\t', tabCount) + HttpUtility.HtmlDecode(htmlDocument.DocumentNode.InnerText));
                 }
             }
             return sb.ToString().TrimEnd('\r','\n');
+        }
+
+        public bool IsSelectedTextInline(string pageXml)
+        {
+            var node = XDocument.Parse(pageXml).Descendants(ns + "Outline")
+                                               .Where(n => n.Attribute("selected") != null && (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial"))
+                                               .FirstOrDefault();
+
+            if (node != null)
+            {
+                var table = node.Descendants(ns + "Table").Where(n => n.Attribute("selected") != null && (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial")).FirstOrDefault();
+
+                System.Collections.Generic.IEnumerable<XElement> attrPos;
+                if (table == null)
+                {
+                    foreach (var oeNode in node.Descendants(ns + "OE"))
+                    {
+                        if (oeNode.Descendants(ns + "T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").Count() > 0
+                                        && oeNode.Descendants(ns + "T").Where(n => n.Attribute("selected") == null || n.Attribute("selected").Value == "none").Count() > 0)
+                        {
+                            return true;
+                        } 
+                    }
+                }
+            }
+            return false;
         }
 
         /// <summary>
         /// 產生 XML 插入至 OneNote
         /// Generate XML Insert To OneNote
         /// </summary>
-        public XDocument InsertHighLightCode(string htmlContent, string[] position, HighLightParameter parameters, XElement outline, bool selectedTextFormated)
+        public XDocument InsertHighLightCode(string htmlContent, string[] position, HighLightParameter parameters, XElement outline, HighLightSection config, bool selectedTextFormated, bool isInline)
+        {
+            XElement children = PrepareFormatedContent(htmlContent, parameters, config, isInline);
+
+            bool update = false;
+            if (outline == null)
+            {
+                outline = CreateOutline(position, children);
+            }
+            else // Update exiting outline
+            {
+                update = true;
+
+                //Change outline width
+                outline.Element(ns + "Size").Attribute("width").Value = "1600";
+
+                if (selectedTextFormated)
+                {
+                    outline.Descendants(ns + "Table").Where(n => n.Attribute("selected") != null &&
+                                        (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial")).FirstOrDefault().ReplaceWith(children.Descendants(ns + "Table").FirstOrDefault());
+                    //outline.Descendants().Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").Remove();
+                }
+                else
+                {
+                    if (isInline)
+                    {
+                        int j = 0;
+                        for(int i = 0; i < outline.Descendants(ns + "OE").Count(); i++)
+                        {
+                            XElement oeNode = outline.Descendants(ns + "OE").ElementAt(i);
+
+                            if (oeNode.Descendants(ns + "T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").Count() > 0)
+                            {
+                                oeNode.Descendants(ns + "T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").FirstOrDefault().ReplaceWith(children.Descendants(ns + "Table").Descendants(ns + "OEChildren").Descendants(ns + "OE").ElementAt(j).Descendants(ns + "T"));
+                                j++;
+                            }
+
+                        }
+                        outline.Descendants(ns + "OE").Where(t => t.Elements(ns + "T").Any(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all")).Remove();
+                    }
+                    else
+                    {
+                        outline.Descendants(ns + "T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").FirstOrDefault().ReplaceWith(children.Descendants(ns + "Table").FirstOrDefault());
+                        outline.Descendants(ns + "OE").Where(t => t.Elements(ns + "T").Any(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all")).Remove();
+                        outline.Descendants(ns + "OEChildren").Where(n => n.HasElements == false && n.Attribute("selected") != null && (n.Attribute("selected").Value == "partial")).Remove();
+                    }
+                }
+            }
+
+            if (update)
+            {
+                return outline.Parent.Document;
+            }
+            else
+            {
+                XElement page = new XElement(ns + "Page");
+                page.Add(outline);
+
+                XDocument doc = new XDocument();
+                doc.Add(page);
+                return doc;
+            }
+
+
+        }
+
+        private XElement CreateOutline(string[] position, XElement children)
+        {
+            XElement outline = new XElement(ns + "Outline");
+            if (position != null && position.Length == 2)
+            {
+                XElement pos = new XElement(ns + "Position");
+                pos.Add(new XAttribute("x", position[0]));
+                pos.Add(new XAttribute("y", position[1]));
+                outline.Add(pos);
+
+                XElement size = new XElement(ns + "Size");
+                size.Add(new XAttribute("width", "1600"));
+                size.Add(new XAttribute("height", "200"));
+                outline.Add(size);
+            }
+            outline.Add(children);
+            return outline;
+        }
+
+        private XElement PrepareFormatedContent(string htmlContent, HighLightParameter parameters, HighLightSection config, bool isInline)
         {
             XElement children = new XElement(ns + "OEChildren");
 
             XElement table = new XElement(ns + "Table");
-            table.Add(new XAttribute("bordersVisible", "false"));
+            table.Add(new XAttribute("bordersVisible", NoteHighlightForm.Properties.Settings.Default.ShowTableBorder));
 
             XElement columns = new XElement(ns + "Columns");
             XElement column1 = new XElement(ns + "Column");
             column1.Add(new XAttribute("index", "0"));
             column1.Add(new XAttribute("width", "40"));
-            if (parameters.ShowLineNumber)
+            if (parameters.ShowLineNumber && !isInline)
             {
                 columns.Add(column1);
             }
             XElement column2 = new XElement(ns + "Column");
-            if (parameters.ShowLineNumber)
+            if (parameters.ShowLineNumber && !isInline)
             {
                 column2.Add(new XAttribute("index", "1"));
             }
@@ -411,14 +580,14 @@ namespace NoteHighlightAddin
             {
                 column2.Add(new XAttribute("index", "0"));
             }
-            
+
             column2.Add(new XAttribute("width", "1400"));
             columns.Add(column2);
 
             table.Add(columns);
 
             Color color = parameters.HighlightColor;
-            string colorString = string.Format("#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
+            string colorString = color.A == 0 ? "none" : string.Format("#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
 
             XElement row = new XElement(ns + "Row");
             XElement cell1 = new XElement(ns + "Cell");
@@ -434,12 +603,12 @@ namespace NoteHighlightAddin
             {
                 string item = it;
 
-                if(item.StartsWith("<pre"))
+                if (item.StartsWith("<pre"))
                 {
-                    defaultStyle = item.Substring(0,item.IndexOf(">") +1);
+                    defaultStyle = item.Substring(0, item.IndexOf(">") + 1);
                     //Sets language to Latin to disable spell check
                     defaultStyle = defaultStyle.Insert(defaultStyle.Length - 1, " lang=la");
-                    item = item.Substring(item.IndexOf(">")+1);
+                    item = item.Substring(item.IndexOf(">") + 1);
                 }
 
                 if (item == "</pre>")
@@ -465,12 +634,27 @@ namespace NoteHighlightAddin
 
                     //string nr = string.Format(@"<body style=""font-family:{0}"">", GenerateHighlightContent.GenerateHighLight.Config.OutputArguments["Font"].Value) +
                     //        itemNr.Replace("&apos;", "'") + "</body>";
-                    string nr = defaultStyle + itemNr.Replace("&apos;", "'") + "</pre>";
+                    string nr = "";
+                    if (string.IsNullOrEmpty(config.LineNrReplaceCh))
+                    {
+                        nr = defaultStyle + itemNr.Replace("&apos;", "'") + "</pre>";
+                    }
+                    else
+                    {
+                        nr = defaultStyle + config.LineNrReplaceCh.PadLeft(5) + "</pre>";
+                    }
+
+                    XElement oeElement = new XElement(ns + "OE",
+                                    new XElement(ns + "T",
+                                        new XCData(nr)));
+                    if (ContainsAsianCharacter(itemLine))
+                    {
+                        oeElement.Add(new XAttribute("spaceBefore", config.AsianBeforeSpace));
+                        oeElement.Add(new XAttribute("spaceAfter", config.AsianAfterSpace));
+                    }
 
                     cell1.Add(new XElement(ns + "OEChildren",
-                                new XElement(ns + "OE",
-                                    new XElement(ns + "T",
-                                        new XCData(nr)))));
+                               oeElement ));
                 }
                 else
                 {
@@ -488,7 +672,7 @@ namespace NoteHighlightAddin
 
             }
 
-            if (parameters.ShowLineNumber)
+            if (parameters.ShowLineNumber && !isInline)
             {
                 row.Add(cell1);
             }
@@ -498,58 +682,12 @@ namespace NoteHighlightAddin
 
             children.Add(new XElement(ns + "OE",
                                 table));
-
-            bool update = false;
-            if (outline == null)
-            {
-                outline = new XElement(ns + "Outline");
-
-                if (position != null && position.Length == 2)
-                {
-                    XElement pos = new XElement(ns + "Position");
-                    pos.Add(new XAttribute("x", position[0]));
-                    pos.Add(new XAttribute("y", position[1]));
-                    outline.Add(pos);
-
-                    XElement size = new XElement(ns + "Size");
-                    size.Add(new XAttribute("width", "1600"));
-                    size.Add(new XAttribute("height", "200"));
-                    outline.Add(size);
-                }
-                outline.Add(children);
-            }
-            else
-            {
-                update = true;
-                if (selectedTextFormated)
-                {
-                    outline.Descendants(ns+"Table").Where(n => n.Attribute("selected") != null && 
-                                        (n.Attribute("selected").Value == "all" || n.Attribute("selected").Value == "partial")).FirstOrDefault().ReplaceWith(children.Descendants(ns + "Table").FirstOrDefault());
-                    //outline.Descendants().Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").Remove();
-                }
-                else
-                {
-                    outline.Descendants(ns+"T").Where(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all").FirstOrDefault().ReplaceWith(children.Descendants(ns + "Table").FirstOrDefault());
-                    outline.Descendants(ns + "OE").Where(t => t.Elements(ns+"T").Any(n => n.Attribute("selected") != null && n.Attribute("selected").Value == "all")).Remove();
-                }
-            }
-
-            if (update)
-            {
-                return outline.Parent.Document;
-            }
-            else
-            {
-                XElement page = new XElement(ns + "Page");
-                page.Add(outline);
-
-                XDocument doc = new XDocument();
-                doc.Add(page);
-                return doc;
-            }
-
-            
+            return children;
         }
 
+        private bool ContainsAsianCharacter(string itemLine)
+        {
+            return itemLine.Any(c => (uint)c >= 0x4E00 && (uint)c <= 0x2FA1F);
+        }
     }
 }

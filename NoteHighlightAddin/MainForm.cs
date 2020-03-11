@@ -46,17 +46,29 @@ namespace NoteHighlightAddin
 
         public HighLightParameter Parameters { get { return _parameters; } }
 
+        private bool _quickStyle;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
         #endregion
 
         #region -- Constructor --
 
-        public MainForm(string codeType, string fileName, string selectedText)
+        public MainForm(string codeType, string fileName, string selectedText, bool quickStyle)
         {
             _codeType = codeType;
             _fileName = fileName;
             InitializeComponent();
             LoadThemes();
             txtCode.Text = selectedText;
+            _quickStyle = quickStyle;
+
+            if (_quickStyle)
+            {
+                this.WindowState = FormWindowState.Minimized;
+                this.ShowInTaskbar = false;
+            }
 
         }
 
@@ -64,9 +76,7 @@ namespace NoteHighlightAddin
         {
             try
             {
-                Configuration c = ConfigurationManager.OpenExeConfiguration(Assembly.GetCallingAssembly().Location);
-                HighLightSection section = c.GetSection("HighLightSection") as HighLightSection;
-
+                HighLightSection section = (new GenerateHighLight()).Config;
                 var workingDirectory = Path.Combine(ProcessHelper.GetDirectoryFromPath(Assembly.GetCallingAssembly().Location), section.FolderName, section.ThemeFolder);
 
                 string[] files = Directory.GetFiles(workingDirectory, "*.theme");
@@ -99,8 +109,10 @@ namespace NoteHighlightAddin
             this.txtCode.Encoding = Encoding.UTF8;
             this.cbx_style.SelectedIndex = NoteHighlightForm.Properties.Settings.Default.HighLightStyle;
             this.btnBackground.BackColor = NoteHighlightForm.Properties.Settings.Default.BackgroundColor;
-            this.TopMost = true;
-            this.TopMost = false;
+            this.cbx_Clipboard.Checked = NoteHighlightForm.Properties.Settings.Default.SaveOnClipboard;
+            this.cbx_lineNumber.Checked = NoteHighlightForm.Properties.Settings.Default.ShowLineNumber;
+            //this.TopMost = true;
+            //this.TopMost = false;
         }
 
         /// <summary>
@@ -116,6 +128,11 @@ namespace NoteHighlightAddin
         /// </summary>
         private void btnCodeHighLight_Click(object sender, EventArgs e)
         {
+            if (string.IsNullOrEmpty(CodeStyle))
+            {
+                MessageBox.Show("Please select code Style!");
+                return;
+            }
             IGenerateHighLight generate = new GenerateHighLight();
 
             string outputFileName = String.Empty;
@@ -127,7 +144,10 @@ namespace NoteHighlightAddin
                 CodeType = _codeType,
                 HighLightStyle = CodeStyle,
                 ShowLineNumber = IsShowLineNumber,
-                HighlightColor = BackgroundColor
+                HighlightColor = BackgroundColor,
+                Font = NoteHighlightForm.Properties.Settings.Default.Font,
+                FontSize = NoteHighlightForm.Properties.Settings.Default.FontSize
+
             };
 
             try
@@ -271,10 +291,39 @@ namespace NoteHighlightAddin
 
         private void btnBackground_Click(object sender, EventArgs e)
         {
+            contextMenuStrip1.Show(btnBackground, new Point(0, btnBackground.Height));
+            
+        }
+
+        private void MainForm_Shown(object sender, EventArgs e)
+        {
+
+            if (_quickStyle)
+            {
+                btnCodeHighLight.PerformClick()
+;            }
+            else
+            {
+                // This is necessary in order for SetForegroundWindow to work consistently
+                this.WindowState = FormWindowState.Minimized;
+                this.WindowState = FormWindowState.Normal;
+
+                SetForegroundWindow(this.Handle);
+            }
+
+        }
+
+        private void PickColorToolStripMenuItem_Click(object sender, EventArgs e)
+        {
             if (colorDialog1.ShowDialog() == DialogResult.OK)
             {
                 btnBackground.BackColor = colorDialog1.Color;
             }
+        }
+
+        private void TransparentToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            btnBackground.BackColor = Color.Transparent;
         }
     }
 }
